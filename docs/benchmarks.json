@@ -1,0 +1,20 @@
+{
+  "batch_id": "07e8a770-9ae3-4a53-901c-a8516cf53bda",
+  "event_count": 5,
+  "create_batch_ms": 34.25,
+  "event_write_ms_mean": 38.45,
+  "event_write_ms_p95": 44.83,
+  "verify_ms_mean": 4.8,
+  "verify_ms_p95": 10.78,
+  "get_batch_ms": 1.74,
+  "anchor_ms": 108.44,
+  "anchor": {
+    "dry_run": false,
+    "tx_hash": "0x1f791e9273197ec29cb0b701a8fc5b7b23599921bae6f2af9af674f2cee74d72",
+    "explorer_url": null,
+    "merkle_root": "cb063e9543a04a65ad1c9b79542892ee425fd6d537a6f523445741d387f45d6d"
+  },
+  "chain_mode": "local-eth-tester",
+  "paper_trace_baseline": "days (manual / paper recall, per Walmart/IBM literature)",
+  "digital_trace_ms_mean": 4.8
+}
