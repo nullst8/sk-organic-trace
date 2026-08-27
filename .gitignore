@@ -1,0 +1,28 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Backend (secrets + local state)
+backend/provenance.db
+backend/provenance.db-*
+backend/.env
+backend/.anchor_local.json
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/*.local
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Logs
+*.log
