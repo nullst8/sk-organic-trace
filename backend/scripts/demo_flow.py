@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 import time
 import urllib.request
 from pathlib import Path
 
-BASE = "http://127.0.0.1:8000"
+# Point at a hosted instance with e.g.:
+#   PROVENANCE_BASE=https://your-app.onrender.com python demo_flow.py
+BASE = os.environ.get("PROVENANCE_BASE", "http://127.0.0.1:8000")
 DB = Path(__file__).resolve().parents[1] / "provenance.db"
 
 

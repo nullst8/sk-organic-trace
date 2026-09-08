@@ -36,7 +36,7 @@ class Participant(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
-    role: Mapped[ParticipantRole] = mapped_column(Enum(ParticipantRole), nullable=False)
+    role: Mapped[ParticipantRole] = mapped_column(Enum(ParticipantRole, native_enum=False), nullable=False)
     public_key: Mapped[str] = mapped_column(Text, nullable=False)
     private_key_demo: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
@@ -65,7 +65,7 @@ class Event(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     batch_id: Mapped[str] = mapped_column(ForeignKey("batches.id"), nullable=False, index=True)
-    event_type: Mapped[EventType] = mapped_column(Enum(EventType), nullable=False)
+    event_type: Mapped[EventType] = mapped_column(Enum(EventType, native_enum=False), nullable=False)
     actor_id: Mapped[str] = mapped_column(ForeignKey("participants.id"), nullable=False)
     payload_json: Mapped[str] = mapped_column(Text, nullable=False)
     prev_hash: Mapped[str] = mapped_column(String(64), nullable=False)

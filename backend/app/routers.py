@@ -8,7 +8,6 @@ import qrcode
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from . import models, schemas
@@ -252,63 +251,54 @@ def _append_event(
     details: dict[str, Any],
     signature: str | None,
 ) -> models.Event:
+    # `_event_lock` serializes event creation within the process. We run a single
+    # worker, so the sequence number is race-free here and we avoid SQLite-style
+    # SAVEPOINT retries that PgBouncer (Neon pooled Postgres) does not support.
     with _event_lock:
-        last_error: Exception | None = None
         batch_id = batch.id
         actor_id = actor.id
-        for _ in range(8):
-            try:
-                with db.begin_nested():
-                    last = db.scalars(
-                        select(models.Event)
-                        .where(models.Event.batch_id == batch_id)
-                        .order_by(models.Event.seq.desc())
-                        .limit(1)
-                    ).first()
-                    prev_hash = last.hash if last else GENESIS_HASH
-                    next_seq = (db.scalar(select(func.max(models.Event.seq))) or 0) + 1
 
-                    payload = {
-                        "batch_id": batch_id,
-                        "event_type": event_type.value,
-                        "actor_id": actor_id,
-                        "seq": next_seq,
-                        "details": details,
-                    }
-                    payload_canonical = canonical_json(payload)
+        last = db.scalars(
+            select(models.Event)
+            .where(models.Event.batch_id == batch_id)
+            .order_by(models.Event.seq.desc())
+            .limit(1)
+        ).first()
+        prev_hash = last.hash if last else GENESIS_HASH
+        next_seq = (db.scalar(select(func.max(models.Event.seq))) or 0) + 1
 
-                    if signature:
-                        if not verify_signature(actor.public_key, payload_canonical, signature):
-                            raise HTTPException(400, "Invalid signature")
-                        sig = signature
-                    else:
-                        if not actor.private_key_demo:
-                            raise HTTPException(400, "No demo private key; provide signature")
-                        sig = sign_message(actor.private_key_demo, payload_canonical)
+        payload = {
+            "batch_id": batch_id,
+            "event_type": event_type.value,
+            "actor_id": actor_id,
+            "seq": next_seq,
+            "details": details,
+        }
+        payload_canonical = canonical_json(payload)
 
-                    h = event_hash(prev_hash, payload_canonical, sig)
-                    event = models.Event(
-                        batch_id=batch_id,
-                        event_type=event_type,
-                        actor_id=actor_id,
-                        payload_json=payload_canonical,
-                        prev_hash=prev_hash,
-                        hash=h,
-                        signature=sig,
-                        seq=next_seq,
-                    )
-                    db.add(event)
-                    db.flush()
-                    return event
-            except HTTPException:
-                raise
-            except IntegrityError as exc:
-                last_error = exc
-                actor = db.get(models.Participant, actor_id)
-                if not actor:
-                    raise HTTPException(404, "Actor missing after retry") from exc
-                continue
-        raise HTTPException(409, f"Could not allocate event seq: {last_error}")
+        if signature:
+            if not verify_signature(actor.public_key, payload_canonical, signature):
+                raise HTTPException(400, "Invalid signature")
+            sig = signature
+        else:
+            if not actor.private_key_demo:
+                raise HTTPException(400, "No demo private key; provide signature")
+            sig = sign_message(actor.private_key_demo, payload_canonical)
+
+        h = event_hash(prev_hash, payload_canonical, sig)
+        event = models.Event(
+            batch_id=batch_id,
+            event_type=event_type,
+            actor_id=actor_id,
+            payload_json=payload_canonical,
+            prev_hash=prev_hash,
+            hash=h,
+            signature=sig,
+            seq=next_seq,
+        )
+        db.add(event)
+        db.flush()
+        return event
 
 
 def _load_batch(db: Session, batch_id: str) -> models.Batch | None:

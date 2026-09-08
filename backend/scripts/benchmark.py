@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
+import os
 import statistics
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 
-BASE = "http://127.0.0.1:8000"
+# Point at a hosted instance with e.g.:
+#   PROVENANCE_BASE=https://your-app.onrender.com python benchmark.py
+BASE = os.environ.get("PROVENANCE_BASE", "http://127.0.0.1:8000")
 OUT = Path(__file__).resolve().parents[2] / "docs" / "benchmarks.json"
 
 
