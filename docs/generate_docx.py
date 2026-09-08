@@ -11,7 +11,7 @@ from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Cm, Pt, RGBColor
+from docx.shared import Cm, Inches, Pt, RGBColor
 
 ROOT = Path(__file__).resolve().parent
 GREEN = RGBColor(0x1B, 0x4D, 0x2E)
@@ -114,6 +114,27 @@ def _add_code_block(doc: Document, lines: list[str]) -> None:
     pPr.append(shd)
 
 
+IMG_RE = re.compile(r"^!\[[^\]]*\]\(([^)]+)\)$")
+
+
+def _add_image(doc: Document, path: Path) -> None:
+    if not path.exists():
+        print(f"WARNING: image not found: {path}")
+        return
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run()
+    run.add_picture(str(path), width=Inches(6.0))
+    _style_paragraph(p, space_after=10, space_before=6)
+
+
+def _add_centered(doc: Document, text: str) -> None:
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    _add_inline(p, text)
+    _style_paragraph(p, space_after=6)
+
+
 def _is_table_sep(line: str) -> bool:
     return bool(re.match(r"^\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$", line))
 
@@ -194,6 +215,19 @@ def convert(md_path: Path, out_path: Path, subtitle: str) -> None:
             i += 1
             continue
         if not line.strip() or line.strip() == "---":
+            i += 1
+            continue
+        m = IMG_RE.match(line.strip())
+        if m:
+            _add_image(doc, (md_path.parent / m.group(1)).resolve())
+            i += 1
+            continue
+        if line.strip() == "[[pagebreak]]":
+            doc.add_page_break()
+            i += 1
+            continue
+        if line.startswith("> "):
+            _add_centered(doc, line[2:].strip())
             i += 1
             continue
         if line.startswith("|") and i + 1 < len(lines) and _is_table_sep(lines[i + 1]):
