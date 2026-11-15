@@ -5,13 +5,13 @@ import threading
 from typing import Any
 
 import qrcode
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
 from . import models, schemas
-from .chain import chain_status, explorer_tx_url, submit_merkle_root
+from .chain import chain_status, explorer_tx_url, read_anchored_root, submit_merkle_root
 from .crypto_chain import (
     GENESIS_HASH,
     canonical_json,
@@ -26,6 +26,22 @@ from .settings import settings
 
 router = APIRouter(prefix="/api")
 _event_lock = threading.Lock()
+_anchor_lock = threading.Lock()
+
+# Which event types each participant role may record. Handlers cover the whole
+# middle of the chain, retailers record the final sale, producers may hand over a
+# batch, and regulators are read-only. "harvest" is only created with the batch.
+ALLOWED_EVENTS: dict[models.ParticipantRole, set[models.EventType]] = {
+    models.ParticipantRole.producer: {models.EventType.handoff},
+    models.ParticipantRole.handler: {
+        models.EventType.handoff,
+        models.EventType.process,
+        models.EventType.ship,
+        models.EventType.retail,
+    },
+    models.ParticipantRole.retailer: {models.EventType.retail},
+    models.ParticipantRole.regulator: set(),
+}
 
 
 @router.get("/health", response_model=schemas.HealthOut)
@@ -119,6 +135,10 @@ def add_event(batch_id: str, body: schemas.EventCreate, db: Session = Depends(ge
         raise HTTPException(404, "Actor not found")
     if body.event_type == models.EventType.harvest:
         raise HTTPException(400, "harvest is created with the batch")
+    if body.event_type not in ALLOWED_EVENTS.get(actor.role, set()):
+        raise HTTPException(
+            403, f"role '{actor.role.value}' may not record '{body.event_type.value}' events"
+        )
 
     event = _append_event(
         db,
@@ -134,7 +154,7 @@ def add_event(batch_id: str, body: schemas.EventCreate, db: Session = Depends(ge
 
 
 @router.get("/batches/{batch_id}/verify", response_model=schemas.VerifyResult)
-def verify_batch(batch_id: str, db: Session = Depends(get_db)):
+def verify_batch(batch_id: str, check_anchor: bool = False, db: Session = Depends(get_db)):
     batch = db.get(models.Batch, batch_id)
     if not batch:
         raise HTTPException(404, "Batch not found")
@@ -166,19 +186,60 @@ def verify_batch(batch_id: str, db: Session = Depends(get_db)):
             )
         prev = ev.hash
 
-    return schemas.VerifyResult(
+    result = schemas.VerifyResult(
         batch_id=batch_id,
         intact=True,
         event_count=len(events),
         message="Chain intact",
     )
+    if check_anchor:
+        _attach_anchor_status(db, events, result)
+    return result
+
+
+def _attach_anchor_status(db: Session, events: list[models.Event], result: schemas.VerifyResult) -> None:
+    """Report whether the newest anchor covering this batch still matches the events."""
+    seqs = [e.seq for e in events]
+    covering = None
+    if seqs:
+        covering = db.scalars(
+            select(models.Anchor)
+            .where(models.Anchor.from_seq <= max(seqs), models.Anchor.to_seq >= min(seqs))
+            .order_by(models.Anchor.id.desc())
+        ).all()
+    anchors = [a for a in (covering or []) if any(a.from_seq <= q <= a.to_seq for q in seqs)]
+    if not anchors:
+        result.anchor_status = "not_anchored"
+        return
+    for a in anchors:
+        check = _check_anchor(db, a, read_chain=False)
+        if not check.events_match:
+            result.anchor_id, result.anchor_status = a.id, "mismatch"
+            result.message += f"; anchor #{a.id} no longer matches the stored events"
+            return
+    result.anchor_id, result.anchor_status = anchors[0].id, "ok"
+    if any(q > max(a.to_seq for a in anchors) for q in seqs):
+        result.message += "; newest events are not anchored yet"
+
+
+def _trace_url(request: Request, batch_id: str) -> str:
+    """Absolute URL for the consumer page, so a phone camera can open the QR code."""
+    base = settings.public_base_url or str(request.base_url)
+    return f"{base.rstrip('/')}/trace/{batch_id}"
+
+
+@router.get("/batches/{batch_id}/trace-url", response_model=schemas.TraceUrlOut)
+def batch_trace_url(batch_id: str, request: Request, db: Session = Depends(get_db)):
+    if not db.get(models.Batch, batch_id):
+        raise HTTPException(404, "Batch not found")
+    return schemas.TraceUrlOut(url=_trace_url(request, batch_id))
 
 
 @router.get("/batches/{batch_id}/qr")
-def batch_qr(batch_id: str, db: Session = Depends(get_db)):
+def batch_qr(batch_id: str, request: Request, db: Session = Depends(get_db)):
     if not db.get(models.Batch, batch_id):
         raise HTTPException(404, "Batch not found")
-    payload = f"/trace/{batch_id}"
+    payload = _trace_url(request, batch_id)
     img = qrcode.make(payload)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
@@ -195,6 +256,54 @@ def list_anchors(db: Session = Depends(get_db)):
 
 @router.post("/anchors", response_model=schemas.AnchorOut)
 def create_anchor(db: Session = Depends(get_db)):
+    # One anchor at a time, so two requests cannot claim the same sequence range.
+    with _anchor_lock:
+        return _create_anchor(db)
+
+
+def _check_anchor(db: Session, row: models.Anchor, read_chain: bool = True) -> schemas.AnchorVerifyOut:
+    events = db.scalars(
+        select(models.Event)
+        .where(models.Event.seq >= row.from_seq, models.Event.seq <= row.to_seq)
+        .order_by(models.Event.seq)
+    ).all()
+    expected = row.to_seq - row.from_seq + 1
+    recomputed = merkle_root([e.hash for e in events])
+    events_match = len(events) == expected and recomputed == row.merkle_root
+    on_chain = read_anchored_root(row.tx_hash) if read_chain else None
+    on_chain_match = None if on_chain is None else on_chain == row.merkle_root
+    if not events_match:
+        message = "Stored events no longer produce the anchored root"
+    elif on_chain_match is False:
+        message = "Anchored root differs from the root logged on-chain"
+    elif on_chain_match:
+        message = "Events match the anchored root and the on-chain log"
+    else:
+        message = "Events match the stored anchor; on-chain log could not be read"
+    return schemas.AnchorVerifyOut(
+        anchor_id=row.id,
+        from_seq=row.from_seq,
+        to_seq=row.to_seq,
+        stored_root=row.merkle_root,
+        recomputed_root=recomputed,
+        events_found=len(events),
+        events_expected=expected,
+        events_match=events_match,
+        on_chain_root=on_chain,
+        on_chain_match=on_chain_match,
+        message=message,
+    )
+
+
+@router.get("/anchors/{anchor_id}/verify", response_model=schemas.AnchorVerifyOut)
+def verify_anchor(anchor_id: int, db: Session = Depends(get_db)):
+    row = db.get(models.Anchor, anchor_id)
+    if not row:
+        raise HTTPException(404, "Anchor not found")
+    return _check_anchor(db, row)
+
+
+def _create_anchor(db: Session):
     last = db.scalars(select(models.Anchor).order_by(models.Anchor.id.desc()).limit(1)).first()
     from_seq = (last.to_seq + 1) if last else 1
 

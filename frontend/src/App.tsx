@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import {
   api,
   type Anchor,
+  type AnchorVerify,
   type Batch,
   type ChainStatus,
   type EventType,
@@ -11,6 +12,13 @@ import {
 } from './api'
 import { QrScanner } from './QrScanner'
 import './App.css'
+
+const ALLOWED_EVENTS: Record<ParticipantRole, EventType[]> = {
+  producer: ['handoff'],
+  handler: ['handoff', 'process', 'ship', 'retail'],
+  retailer: ['retail'],
+  regulator: [],
+}
 
 type Page = 'home' | 'producer' | 'handler' | 'consumer' | 'admin'
 
@@ -49,6 +57,7 @@ function App() {
     api.chainStatus().then(setChain).catch(() => setChain(null))
     refresh().catch((e) => setError(String(e.message ?? e)))
     if (traceId) setPage('consumer')
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on mount
   }, [])
 
   return (
@@ -94,7 +103,7 @@ function App() {
       {chain && (
         <p className="banner chain">
           Chain: <strong>{chain.mode}</strong>
-          {chain.contract ? (
+          {chain.contract && (
             <>
               {' '}
               · contract <code>{chain.contract.slice(0, 10)}…</code>
@@ -107,13 +116,17 @@ function App() {
                 </>
               )}
             </>
-          ) : (
-            <>
-              {' '}
-              · fund <code>{chain.funding_address?.slice(0, 10)}…</code> then{' '}
-              <code>python deploy_anchor.py</code>
-            </>
           )}
+          {chain.mode === 'local-eth-tester' &&
+            (chain.funding_address ? (
+              <>
+                {' '}
+                · fund <code>{chain.funding_address.slice(0, 10)}…</code> then{' '}
+                <code>python deploy_anchor.py</code> to anchor on Sepolia
+              </>
+            ) : (
+              <> · anchors live in server memory and reset when the server restarts</>
+            ))}
         </p>
       )}
 
@@ -196,6 +209,7 @@ function ProducerPage({
   const [origin, setOrigin] = useState('Gangtok, Sikkim')
   const [producerId, setProducerId] = useState('')
   const [created, setCreated] = useState<Batch | null>(null)
+  const [createdUrl, setCreatedUrl] = useState('')
 
   useEffect(() => {
     if (producers[0] && !producerId) setProducerId(producers[0].id)
@@ -225,6 +239,8 @@ function ProducerPage({
         producer_id: producerId,
       })
       setCreated(b)
+      setCreatedUrl('')
+      api.traceUrl(b.id).then((r) => setCreatedUrl(r.url)).catch(() => undefined)
       await onRefresh()
     } catch (err) {
       onError(String((err as Error).message))
@@ -291,7 +307,15 @@ function ProducerPage({
             width={180}
             height={180}
           />
-          <p>Print this QR on the packet. Path encoded: /trace/{created.id}</p>
+          <p>
+            Print this QR on the packet.
+            {createdUrl && (
+              <>
+                {' '}
+                It opens <code>{createdUrl}</code>
+              </>
+            )}
+          </p>
         </section>
       )}
 
@@ -330,10 +354,17 @@ function HandlerPage({
   const [eventType, setEventType] = useState<EventType>('handoff')
   const [note, setNote] = useState('')
 
+  const actor = handlers.find((p) => p.id === actorId)
+  const allowedTypes = useMemo<EventType[]>(() => (actor ? ALLOWED_EVENTS[actor.role] : []), [actor])
+
   useEffect(() => {
     if (handlers[0] && !actorId) setActorId(handlers[0].id)
     if (batches[0] && !batchId) setBatchId(batches[0].id)
   }, [handlers, batches, actorId, batchId])
+
+  useEffect(() => {
+    if (allowedTypes.length && !allowedTypes.includes(eventType)) setEventType(allowedTypes[0])
+  }, [allowedTypes, eventType])
 
   async function registerHandler(e: FormEvent) {
     e.preventDefault()
@@ -425,17 +456,21 @@ function HandlerPage({
               value={eventType}
               onChange={(e) => setEventType(e.target.value as EventType)}
             >
-              <option value="handoff">handoff</option>
-              <option value="process">process</option>
-              <option value="ship">ship</option>
-              <option value="retail">retail</option>
+              {allowedTypes.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
             </select>
           </label>
+          {actor && !allowedTypes.length && (
+            <p className="muted">A {actor.role} has read-only access and cannot record events.</p>
+          )}
           <label>
             Note
             <input value={note} onChange={(e) => setNote(e.target.value)} />
           </label>
-          <button type="submit" className="btn primary" disabled={!batchId || !actorId}>
+          <button type="submit" className="btn primary" disabled={!batchId || !actorId || !allowedTypes.includes(eventType)}>
             Sign & append
           </button>
         </form>
@@ -456,33 +491,27 @@ function ConsumerPage({
   const [id, setId] = useState(initialId)
   const [batch, setBatch] = useState<Batch | null>(null)
   const [verify, setVerify] = useState<VerifyResult | null>(null)
-  const [anchor, setAnchor] = useState<Anchor | null>(null)
   const [scanError, setScanError] = useState('')
 
   async function load(batchId: string) {
     onError(null)
     try {
-      const [b, v, anchors] = await Promise.all([
-        api.getBatch(batchId),
-        api.verify(batchId),
-        api.listAnchors(),
-      ])
+      const [b, v] = await Promise.all([api.getBatch(batchId), api.verify(batchId, true)])
       setBatch(b)
       setVerify(v)
-      setAnchor(anchors[0] ?? null)
       setId(batchId)
       onIdChange(batchId)
       window.history.replaceState(null, '', `/trace/${batchId}`)
     } catch (err) {
       setBatch(null)
       setVerify(null)
-      setAnchor(null)
       onError(String((err as Error).message))
     }
   }
 
   useEffect(() => {
     if (initialId) load(initialId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on mount
   }, [])
 
   return (
@@ -516,35 +545,27 @@ function ConsumerPage({
         </button>
       </form>
       <p className="muted">
-        Scan a packet QR, or paste a batch UUID. QR payload is{' '}
-        <code>/trace/&lt;batch-id&gt;</code>.
+        Scan a packet QR, or paste a batch UUID.
       </p>
 
       {verify && (
         <p className={verify.intact ? 'badge ok' : 'badge bad'}>
-          {verify.intact ? 'Chain intact' : 'Tampered'} — {verify.message}
+          {verify.intact ? 'Chain intact' : 'Tampered'}: {verify.message}
         </p>
       )}
 
-      {anchor && (
+      {verify?.anchor_status === 'ok' && (
         <p className="muted">
-          Latest on-chain anchor: <code>{anchor.merkle_root.slice(0, 18)}…</code>
-          {anchor.tx_hash && (
-            <>
-              {' '}
-              · tx <code>{anchor.tx_hash.slice(0, 18)}…</code>
-              {anchor.dry_run ? ' (dry-run)' : ' (mined)'}
-              {anchor.explorer_url && (
-                <>
-                  {' '}
-                  <a href={anchor.explorer_url} target="_blank" rel="noreferrer">
-                    view on explorer
-                  </a>
-                </>
-              )}
-            </>
-          )}
+          Covered by on-chain anchor #{verify.anchor_id}; the stored events still reproduce its Merkle root.
         </p>
+      )}
+      {verify?.anchor_status === 'mismatch' && (
+        <p className="badge bad">
+          Anchor #{verify.anchor_id} no longer matches the stored events. Treat this batch as altered.
+        </p>
+      )}
+      {verify?.anchor_status === 'not_anchored' && (
+        <p className="muted">No anchor covers this batch yet, so history is signed and chained but not published.</p>
       )}
 
       {batch && (
@@ -587,6 +608,17 @@ function AdminPage({
   const [anchors, setAnchors] = useState<Anchor[]>([])
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
+  const [checks, setChecks] = useState<Record<number, AnchorVerify | string>>({})
+
+  async function checkAnchor(id: number) {
+    try {
+      setChecks((c) => ({ ...c, [id]: 'checking…' }))
+      const r = await api.verifyAnchor(id)
+      setChecks((c) => ({ ...c, [id]: r }))
+    } catch (err) {
+      setChecks((c) => ({ ...c, [id]: String((err as Error).message) }))
+    }
+  }
 
   async function refreshAnchors() {
     try {
@@ -598,6 +630,7 @@ function AdminPage({
 
   useEffect(() => {
     refreshAnchors()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on mount
   }, [])
 
   async function anchorNow() {
@@ -680,6 +713,16 @@ function AdminPage({
               <span className="tag">{a.dry_run ? 'dry-run' : 'on-chain'}</span>
               <br />
               <code className="hash">{a.merkle_root}</code>
+              <br />
+              <button type="button" className="btn ghost" onClick={() => checkAnchor(a.id)}>
+                Verify against events
+              </button>
+              {checks[a.id] && (
+                <span className={typeof checks[a.id] !== 'string' && (checks[a.id] as AnchorVerify).events_match ? 'muted' : 'banner error'}>
+                  {' '}
+                  {typeof checks[a.id] === 'string' ? (checks[a.id] as string) : (checks[a.id] as AnchorVerify).message}
+                </span>
+              )}
               {a.tx_hash && (
                 <>
                   <br />

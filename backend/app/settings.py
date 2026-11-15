@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     anchor_contract_address: str | None = None
     anchor_chain_id: int | None = None
     anchor_force_local: bool = False
+    # Public origin used inside QR codes, e.g. https://trace.example.org
+    public_base_url: str | None = None
 
     @property
     def rpc_configured(self) -> bool:

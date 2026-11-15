@@ -38,6 +38,22 @@ export interface VerifyResult {
   event_count: number
   broken_at_seq: number | null
   message: string
+  anchor_id?: number | null
+  anchor_status?: 'not_anchored' | 'ok' | 'mismatch' | null
+}
+
+export interface AnchorVerify {
+  anchor_id: number
+  from_seq: number
+  to_seq: number
+  stored_root: string
+  recomputed_root: string
+  events_found: number
+  events_expected: number
+  events_match: boolean
+  on_chain_root: string | null
+  on_chain_match: boolean | null
+  message: string
 }
 
 export interface Anchor {
@@ -114,9 +130,12 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
-  verify: (batchId: string) => request<VerifyResult>(`/api/batches/${batchId}/verify`),
+  verify: (batchId: string, checkAnchor = false) =>
+    request<VerifyResult>(`/api/batches/${batchId}/verify${checkAnchor ? '?check_anchor=true' : ''}`),
+  traceUrl: (batchId: string) => request<{ url: string }>(`/api/batches/${batchId}/trace-url`),
   qrUrl: (batchId: string) => `/api/batches/${batchId}/qr`,
   listAnchors: () => request<Anchor[]>('/api/anchors'),
+  verifyAnchor: (anchorId: number) => request<AnchorVerify>(`/api/anchors/${anchorId}/verify`),
   createAnchor: () => request<Anchor>('/api/anchors', { method: 'POST' }),
   chainStatus: () => request<ChainStatus>('/api/chain/status'),
 }

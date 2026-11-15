@@ -7,7 +7,16 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 DB_PATH = Path(__file__).resolve().parent.parent / "provenance.db"
 # Default to local SQLite; override with DATABASE_URL (e.g. a Postgres connection
 # string) when deployed. The schema is plain SQLAlchemy and is Postgres-ready.
-DATABASE_URL = os.environ.get("DATABASE_URL", f"sqlite:///{DB_PATH}")
+def _normalise_url(url: str) -> str:
+    """Point bare postgres URLs (Neon, Render, Heroku style) at the psycopg driver."""
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://"):]
+    if url.startswith("postgresql://"):
+        url = "postgresql+psycopg://" + url[len("postgresql://"):]
+    return url
+
+
+DATABASE_URL = _normalise_url(os.environ.get("DATABASE_URL", f"sqlite:///{DB_PATH}"))
 IS_SQLITE = DATABASE_URL.startswith("sqlite")
 
 engine_kwargs: dict = {}

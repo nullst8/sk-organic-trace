@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -7,7 +8,15 @@ from fastapi.responses import FileResponse
 from .database import Base, engine, ensure_schema_extras
 from .routers import router
 
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    Base.metadata.create_all(bind=engine)
+    ensure_schema_extras()
+    yield
+
+
 app = FastAPI(
+    lifespan=lifespan,
     title="Sikkim Organic Provenance",
     description="Hash-chained food supply traceability API (PBL)",
     version="0.1.0",
@@ -42,8 +51,3 @@ if DIST_DIR.is_dir():
             return FileResponse(candidate)
         return FileResponse(DIST_DIR / "index.html")
 
-
-@app.on_event("startup")
-def on_startup():
-    Base.metadata.create_all(bind=engine)
-    ensure_schema_extras()

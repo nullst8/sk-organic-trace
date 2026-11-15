@@ -69,6 +69,9 @@ class VerifyResult(BaseModel):
     event_count: int
     broken_at_seq: int | None = None
     message: str
+    # Filled only when the request passes check_anchor=true.
+    anchor_id: int | None = None
+    anchor_status: str | None = None  # not_anchored | ok | mismatch
 
 
 class AnchorOut(BaseModel):
@@ -82,6 +85,24 @@ class AnchorOut(BaseModel):
     explorer_url: str | None = None
 
     model_config = {"from_attributes": True}
+
+
+class AnchorVerifyOut(BaseModel):
+    anchor_id: int
+    from_seq: int
+    to_seq: int
+    stored_root: str
+    recomputed_root: str
+    events_found: int
+    events_expected: int
+    events_match: bool
+    on_chain_root: str | None = None
+    on_chain_match: bool | None = None  # None when the chain cannot be read
+    message: str
+
+
+class TraceUrlOut(BaseModel):
+    url: str
 
 
 class HealthOut(BaseModel):

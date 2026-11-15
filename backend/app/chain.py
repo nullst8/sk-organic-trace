@@ -104,7 +104,17 @@ def funding_address() -> str | None:
     return Account.from_key(key).address
 
 
+# Compiled once from CONTRACT_SOURCE with solc 0.8.20 so that deploying the anchor
+# contract needs no compiler download. If CONTRACT_SOURCE changes, regenerate this
+# with `python -c "from app.chain import compile_with_solc; print(compile_with_solc())"`.
+CONTRACT_BYTECODE = "0x608060405234801561000f575f80fd5b506103158061001d5f395ff3fe608060405234801561000f575f80fd5b506004361061003f575f3560e01c806306661abd14610043578063c2b40ae414610061578063eecdf92714610091575b5f80fd5b61004b6100ad565b604051610058919061014c565b60405180910390f35b61007b60048036038101906100769190610193565b6100b3565b60405161008891906101d6565b60405180910390f35b6100ab60048036038101906100a69190610219565b6100c7565b005b60015481565b5f602052805f5260405f205f915090505481565b805f8060015481526020019081526020015f20819055506001547f770041f1a960bfc5b73fb4938dd18b041e2e22692a6230c82927bf60734173ed8242604051610112929190610244565b60405180910390a260015f81548092919061012c90610298565b919050555050565b5f819050919050565b61014681610134565b82525050565b5f60208201905061015f5f83018461013d565b92915050565b5f80fd5b61017281610134565b811461017c575f80fd5b50565b5f8135905061018d81610169565b92915050565b5f602082840312156101a8576101a7610165565b5b5f6101b58482850161017f565b91505092915050565b5f819050919050565b6101d0816101be565b82525050565b5f6020820190506101e95f8301846101c7565b92915050565b6101f8816101be565b8114610202575f80fd5b50565b5f81359050610213816101ef565b92915050565b5f6020828403121561022e5761022d610165565b5b5f61023b84828501610205565b91505092915050565b5f6040820190506102575f8301856101c7565b610264602083018461013d565b9392505050565b7f4e487b71000000000000000000000000000000000000000000000000000000005f52601160045260245ffd5b5f6102a282610134565b91507fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff82036102d4576102d361026b565b5b60018201905091905056fea2646970667358221220da9d11c4048351f47239459c30b2700a143f61b7e6ce40d6164a80d908ecf1da64736f6c63430008140033"
+
+
 def _compile_bytecode() -> str:
+    return CONTRACT_BYTECODE
+
+
+def compile_with_solc() -> str:
     from solcx import compile_source, install_solc, set_solc_version
 
     install_solc("0.8.20")
@@ -254,6 +264,33 @@ def submit_merkle_root(root_hex: str) -> tuple[str, bool, int | None]:
         raise RuntimeError("anchor transaction failed")
     hex_hash = tx_hash.to_0x_hex() if hasattr(tx_hash, "to_0x_hex") else w3.to_hex(tx_hash)
     return hex_hash, False, chain_id
+
+
+def read_anchored_root(tx_hash: str | None) -> str | None:
+    """Return the Merkle root that the anchor contract logged for ``tx_hash``.
+
+    Reads the Anchored event from the transaction receipt, so it does not depend on
+    how DB anchor ids map to contract ids. Returns None if the chain cannot be
+    reached, the transaction is unknown (for example after the in-process tester
+    restarted), or the receipt has no Anchored event from our contract.
+    """
+    if not tx_hash:
+        return None
+    try:
+        if settings.rpc_configured:
+            w3, address, _ = _rpc_web3()
+        elif _local_w3 is not None and _local_address:
+            w3, address = _local_w3, _local_address
+        else:
+            return None
+        receipt = w3.eth.get_transaction_receipt(tx_hash)
+        contract = w3.eth.contract(address=address, abi=ANCHOR_ABI)
+        for entry in contract.events.Anchored().process_receipt(receipt):
+            if entry["address"].lower() == address.lower():
+                return entry["args"]["root"].hex().removeprefix("0x")
+    except Exception:
+        return None
+    return None
 
 
 def write_contract_to_env(address: str) -> None:
